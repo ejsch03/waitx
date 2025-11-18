@@ -29,4 +29,9 @@ fn main() {
 ```
 
 ## Benchmarks
-View some simple benchmarks with other crates [here](https://ejsch03.github.io/waitx/criterion/report/index.html).
+Very basic benchmarking was performed locally on a 12th Gen Intel(R) Core(TM) i7-12700K.
+
+
+![Violin Plot](docs/criterion/channel_ping_pong/report/violin.svg)
+
+View the full benchmark report comparing other popular crates [here](https://ejsch03.github.io/waitx/criterion/report/index.html).
