@@ -1,15 +1,28 @@
 [package]
 name = "waitx"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/eschwart/waitx"
 authors = ["Evan Schwartzentruber <ejsch03@gmail.com>"]
-description = "Lightweight synchronization primitive for one-time ready/wait signaling with optional notification."
-keywords = ["synchronization", "ready", "notify", "condvar", "atomic"]
+description = "Blazingly fast and lightweight signaling primitive."
+keywords = ["signal", "channel", "sync", "atomic", "lightweight"]
 categories = ["concurrency", "asynchronous", "data-structures"]
 exclude = [".github/", ".gitignore", "LICENSE"]
 
 [dependencies]
-crossbeam-utils = "0.8.21"
-parking_lot = "0.12.4"
+parking_lot = "0.12.5"
+spin_sleep = "1.3.3"
+
+[dev-dependencies]
+criterion = "0.7.0"
+crossbeam-channel = "0.5.15"
+flume = "0.11.1"
+
+[[bench]]
+name = "channel_ping_pong"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
