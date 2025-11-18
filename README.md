@@ -27,3 +27,6 @@ fn main() {
     let _ = handle.join();
 }
 ```
+
+## Benchmarks
+View some simple benchmarks with other crates [here](https://ejsch03.github.io/waitx/criterion/report/index.html).
