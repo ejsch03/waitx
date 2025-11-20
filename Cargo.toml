@@ -1,14 +1,14 @@
 [package]
 name = "waitx"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/eschwart/waitx"
 authors = ["Evan Schwartzentruber <ejsch03@gmail.com>"]
 description = "Blazingly fast and lightweight signaling primitive."
 keywords = ["signal", "channel", "sync", "atomic", "lightweight"]
-categories = ["concurrency", "asynchronous", "data-structures"]
-exclude = [".github/", ".gitignore", "LICENSE"]
+categories = ["concurrency"]
+exclude = [".github/", ".gitignore", "LICENSE", "benches"]
 
 [dependencies]
 parking_lot = "0.12.5"
