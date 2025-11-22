@@ -1,52 +1,42 @@
 use parking_lot::Mutex;
-use spin_sleep::SpinSleeper;
 use std::hint::spin_loop;
-use std::sync::atomic::AtomicBool;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use std::thread::{Thread, current};
-use std::time::{Duration, Instant};
+use std::thread::{Thread, current, yield_now};
 
+/// Tuning parameters used to configure the spinning times of [`UnitReceiver`].
 #[derive(Clone, Copy, Debug)]
 pub struct Tuning {
-    busy_spin: Duration,
-    fast_spin: Duration,
-    fast_chunk: Duration,
+    busy_iters: u32,
+    yield_iters: u32,
 }
 
 impl Tuning {
+    /// Default tuning parameters, with a slight bias towards improved latency.
     pub const DEFAULT: Tuning = Tuning {
-        busy_spin: Duration::from_micros(8),
-        fast_spin: Duration::from_micros(128),
-        fast_chunk: Duration::from_micros(32),
+        busy_iters: 2_048,
+        yield_iters: 256,
     };
 
-    /// Create a tuning configuration with default latency-oriented values.
-    pub const fn new(busy_spin: Duration, fast_spin: Duration, fast_chunk: Duration) -> Self {
+    /// Create a custom tuning configuration.
+    pub const fn new(busy_iters: u32, yield_iters: u32) -> Self {
         Self {
-            busy_spin,
-            fast_spin,
-            fast_chunk,
+            busy_iters,
+            yield_iters,
         }
     }
 
-    /// Set the maximum duration of the initial pure spin phase.
-    pub fn busy_spin(mut self, t: Duration) -> Self {
-        self.busy_spin = t;
+    /// Set the maximum u32 of the initial pure spin phase.
+    pub fn busy_iters(mut self, t: u32) -> Self {
+        self.busy_iters = t;
         self
     }
 
-    /// Set the maximum duration of the spin-sleep phase.
-    pub fn fast_spin(mut self, t: Duration) -> Self {
-        self.fast_spin = t;
-        self
-    }
-
-    /// Set the sleep duration for each spin-sleep chunk.
-    pub fn fast_chunk(mut self, chunk_t: Duration) -> Self {
-        self.fast_chunk = chunk_t;
+    /// Set the maximum u32 of the spin-sleep phase.
+    pub fn yield_iters(mut self, t: u32) -> Self {
+        self.yield_iters = t;
         self
     }
 }
@@ -59,7 +49,6 @@ impl Default for Tuning {
 
 struct Inner {
     counter: AtomicU64,
-    parked: AtomicBool,
     thread: Mutex<Thread>,
 }
 
@@ -70,13 +59,10 @@ pub struct UnitSender {
 }
 
 impl UnitSender {
+    #[inline]
     pub fn send(&self) {
         self.inner.counter.fetch_add(1, Ordering::Release);
-
-        // only unpark if needed
-        if self.inner.parked.load(Ordering::Relaxed) {
-            self.inner.thread.lock().unpark();
-        }
+        self.inner.thread.lock().unpark();
     }
 }
 
@@ -85,86 +71,75 @@ impl UnitSender {
 pub struct UnitReceiver {
     inner: Arc<Inner>,
     next: Arc<AtomicU64>,
-    spinner: SpinSleeper,
 }
 
 impl UnitReceiver {
-    /// update the shared [`Thread`] with the current thread.
+    /// Set the shared [`Thread`] to the current thread.
+    #[inline]
     pub fn update_thread(&self) {
         *self.inner.thread.lock() = current()
     }
 
-    /// mitigate [`Ordering::Acquire`] spam.
-    fn fence(&self, target: u64) -> bool {
-        if self.inner.counter.load(Ordering::Relaxed) >= target {
-            std::sync::atomic::fence(Ordering::Acquire);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// recv with explicit tuning (pure spin -> spin-sleep -> park).
+    /// Wait for [`UnitSender`], using provided tuning parameters.
     pub fn recv_with_tuning(
         &self,
         Tuning {
-            busy_spin,
-            fast_spin,
-            fast_chunk,
+            busy_iters,
+            yield_iters,
         }: Tuning,
     ) {
         // which event index this recv() is waiting for
-        let target = self.next.fetch_add(1, Ordering::Relaxed);
+        let target = self.next.fetch_add(1, Ordering::Relaxed) + 1;
 
         // phase 1: busy wait
-        let pure_start = Instant::now();
-        while pure_start.elapsed() < busy_spin {
-            if self.fence(target) {
-                return;
+        if busy_iters != 0 {
+            let mut i = 0;
+            while i < busy_iters {
+                if self.reached(target) {
+                    return;
+                }
+                spin_loop();
+                i += 1;
             }
-            spin_loop();
         }
 
-        // phase 2: spin-sleep
-        let start_spinsleep = Instant::now();
-        while start_spinsleep.elapsed() < fast_spin {
-            if self.fence(target) {
-                return;
+        // phase 2: yield wait
+        if yield_iters != 0 {
+            let mut i = 0;
+            while i < yield_iters {
+                if self.reached(target) {
+                    return;
+                }
+                yield_now();
+                i += 1;
             }
-            self.spinner.sleep(fast_chunk);
         }
 
         // phase 3: park
         loop {
-            if self.fence(target) {
-                return;
+            if self.reached(target) {
+                break;
             }
-
-            // mark as parked before re-checking
-            self.inner.parked.store(true, Ordering::Relaxed);
-
-            // re-check after marking parked to avoid missing a send
-            if self.fence(target) {
-                self.inner.parked.store(false, Ordering::Relaxed);
-                return;
-            }
-
-            // continue with parking
             std::thread::park();
-            self.inner.parked.store(false, Ordering::Relaxed);
         }
     }
 
-    /// recv using the default tuning parameters.
+    /// Wait for [`UnitSender`], using the default tuning parameters.
+    #[inline]
     pub fn recv(&self) {
         self.recv_with_tuning(Tuning::DEFAULT);
     }
+
+    #[inline(always)]
+    fn reached(&self, target: u64) -> bool {
+        self.inner.counter.load(Ordering::Acquire) >= target
+    }
 }
 
+/// Creates a new synchronous, empty channel.
 pub fn unit_channel() -> (UnitSender, UnitReceiver) {
     let inner = Arc::new(Inner {
         counter: Default::default(),
-        parked: Default::default(),
         thread: Mutex::new(current()),
     });
 
@@ -172,13 +147,9 @@ pub fn unit_channel() -> (UnitSender, UnitReceiver) {
         inner: inner.clone(),
     };
 
-    let next = Arc::new(AtomicU64::new(1));
-    let spinner = SpinSleeper::default();
-
     let receiver = UnitReceiver {
         inner,
-        next,
-        spinner,
+        next: Default::default(),
     };
 
     (sender, receiver)
