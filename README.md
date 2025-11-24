@@ -1,9 +1,9 @@
 # `waitx`
 
-Provides an extremely low-latency, pure signaling primitive.
+A lightweight & low-latency, pure signaling primitive.
 
 ## Overview
-`waitx` implements an extremely fast, minimal notification mechanism for SPSC/MPSC use cases where only a “wake up” or “event occurred” signal is needed.
+`waitx` implements a minimal but fast notification mechanism for SPSC/MPSC use cases.
 
 ## Usage
 

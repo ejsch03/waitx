@@ -1,11 +1,11 @@
 [package]
 name = "waitx"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/eschwart/waitx"
 authors = ["Evan Schwartzentruber <ejsch03@gmail.com>"]
-description = "Blazingly fast and minimal signaling primitive."
+description = "A lightweight & low-latency, pure signaling primitive."
 keywords = ["signal", "channel", "sync", "atomic", "lightweight"]
 categories = ["concurrency"]
 exclude = [".github/", ".gitignore", "LICENSE", "benches/", "docs/"]
@@ -14,9 +14,12 @@ exclude = [".github/", ".gitignore", "LICENSE", "benches/", "docs/"]
 parking_lot = "0.12.5"
 
 [dev-dependencies]
+atomic-wait = "1.1.0"
 criterion = "0.7.0"
 crossbeam-channel = "0.5.15"
+event-listener = "5.4.1"
 flume = "0.11.1"
+spin = "0.10.0"
 
 [[bench]]
 name = "ping_pong"
