@@ -20,32 +20,26 @@ fn bench_ping_pong(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
-            let (tx_1, rx_1) = waitx::unit_channel();
-            let (tx_2, rx_2) = waitx::unit_channel();
+            let (tx_1, rx_1) = waitx::pair();
+            let (tx_2, rx_2) = waitx::pair();
 
             let (ready_tx, ready_rx) = std_mpsc::channel();
 
             let worker = std::thread::spawn(move || {
-                // required for waitx
                 rx_1.update_thread();
-
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
-                    rx_1.recv();
-                    tx_2.send();
+                    rx_1.wait();
+                    tx_2.signal();
                 }
             });
-
-            // required for waitx
-            rx_2.update_thread();
-
             ready_rx.recv().unwrap();
 
             let start = Instant::now();
             for _ in 0..iters {
-                tx_1.send();
-                rx_2.recv();
+                tx_1.signal();
+                rx_2.wait();
             }
             let elapsed = start.elapsed();
 
