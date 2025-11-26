@@ -67,7 +67,6 @@ impl UnitSender {
 }
 
 /// Receives notifications.
-#[derive(Clone)]
 pub struct UnitReceiver {
     inner: Arc<Inner>,
     next: Arc<AtomicU64>,
