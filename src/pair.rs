@@ -1,20 +1,33 @@
 use crate::util::*;
-use parking_lot::Mutex;
-use std::sync::atomic::AtomicBool;
+
+#[cfg(not(feature = "loom"))]
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
-use std::thread::{Thread, current};
 
+#[cfg(feature = "loom")]
+use loom::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "loom")]
+use loom::sync::{Arc, Condvar, Mutex};
+
+#[cfg(feature = "loom")]
 struct Inner {
-    counter: AtomicU64,
-    waiting: AtomicBool,
-    thread: Mutex<Thread>,
+    counter: Mutex<u64>,
+    condvar: Condvar,
 }
 
+#[cfg(not(feature = "loom"))]
+struct Inner {
+    counter: AtomicU64,
+    wake: AtomicU32,
+    waiting: AtomicBool,
+}
+
+#[cfg(not(feature = "loom"))]
 struct WaitingGuard<'a>(&'a AtomicBool);
 
+#[cfg(not(feature = "loom"))]
 impl<'a> WaitingGuard<'a> {
     #[inline(always)]
     fn new(flag: &'a AtomicBool) -> Self {
@@ -23,7 +36,8 @@ impl<'a> WaitingGuard<'a> {
     }
 }
 
-impl<'a> Drop for WaitingGuard<'a> {
+#[cfg(not(feature = "loom"))]
+impl Drop for WaitingGuard<'_> {
     #[inline(always)]
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -37,71 +51,91 @@ pub struct Waker {
 }
 
 impl Waker {
-    /// Wakes the associated [`Waiter`] by incrementing the event counter and unparking the thread.
-    ///
-    /// Use this when you want accumulating, sequential wakes.
+    /// Wakes the associated [`Waiter`] by incrementing the event counter and waking the waiting thread.
     #[inline(always)]
     pub fn signal(&self) {
-        self.inner.counter.fetch_add(1, Ordering::Release);
-        self.inner.thread.lock().unpark();
+        #[cfg(not(feature = "loom"))]
+        {
+            self.inner.counter.fetch_add(1, Ordering::Release);
+            self.inner.wake.fetch_add(1, Ordering::Release);
+            atomic_wait::wake_one(&self.inner.wake);
+        }
+
+        #[cfg(feature = "loom")]
+        {
+            *self.inner.counter.lock().unwrap() += 1;
+            self.inner.condvar.notify_one();
+        }
     }
 
     /// Wakes the associated [`Waiter`] only if it is currently waiting.
-    ///
-    /// Use this when you want to to wake the waiter only when it's actively waiting.
     #[inline(always)]
     pub fn wake(&self) {
-        if self.inner.waiting.load(Ordering::Acquire) {
-            self.signal();
+        #[cfg(not(feature = "loom"))]
+        {
+            if self.inner.waiting.load(Ordering::Acquire) {
+                self.signal();
+            }
         }
+
+        #[cfg(feature = "loom")]
+        self.signal();
     }
 }
 
 /// Receives notifications.
 pub struct Waiter {
     inner: Arc<Inner>,
-    next: Arc<AtomicU64>,
+    next: AtomicU64,
 }
 
 impl Waiter {
-    /// Marks the current thread as the target for wake operations.
-    ///
-    /// Should be called once by the thread that will be waiting.
-    #[inline(always)]
-    pub fn update_thread(&self) {
-        *self.inner.thread.lock() = current()
-    }
-
-    /// Wait for [`Waker`], using provided tuning parameters.
+    /// Wait for a [`Waker`] signal, using the provided tuning parameters.
     #[inline]
     pub fn wait_with_tuning(&self, tuning: Tuning) {
         let target = self.next.fetch_add(1, Ordering::Relaxed) + 1;
 
-        // if the event already happened, avoid setting waiting flag
-        if self.inner.counter.load(Ordering::Acquire) >= target {
-            return;
+        #[cfg(not(feature = "loom"))]
+        {
+            if self.inner.counter.load(Ordering::Acquire) >= target {
+                return;
+            }
+            let _wg = WaitingGuard::new(&self.inner.waiting);
+            wait_until_with_tuning(
+                || self.inner.counter.load(Ordering::Acquire) >= target,
+                &self.inner.wake,
+                tuning,
+            );
         }
 
-        let _wg = WaitingGuard::new(&self.inner.waiting);
-
-        wait_until_with_tuning(
-            || self.inner.counter.load(Ordering::Acquire) >= target,
-            tuning,
-        );
+        #[cfg(feature = "loom")]
+        {
+            let _ = tuning;
+            let mut guard = self.inner.counter.lock().unwrap();
+            while *guard < target {
+                guard = self.inner.condvar.wait(guard).unwrap();
+            }
+        }
     }
 
-    /// Wait for [`Waker`], using the default tuning parameters.
+    /// Wait for a [`Waker`] signal, using the default tuning parameters.
     #[inline(always)]
     pub fn wait(&self) {
         self.wait_with_tuning(Tuning::DEFAULT);
     }
 
-    /// Check if notified without blocking.
+    /// Check if a signal is available without blocking.
     #[inline]
     pub fn try_wait(&self) -> bool {
         let target = self.next.load(Ordering::Relaxed) + 1;
 
-        if self.inner.counter.load(Ordering::Acquire) >= target {
+        #[cfg(not(feature = "loom"))]
+        let ready = self.inner.counter.load(Ordering::Acquire) >= target;
+
+        #[cfg(feature = "loom")]
+        let ready = *self.inner.counter.lock().unwrap() >= target;
+
+        if ready {
             self.next.fetch_add(1, Ordering::Relaxed);
             true
         } else {
@@ -110,13 +144,21 @@ impl Waiter {
     }
 }
 
-/// Creates a new synchronous, empty channel.
+/// Creates a linked [`Waker`] / [`Waiter`] pair.
 pub fn pair() -> (Waker, Waiter) {
+    #[cfg(not(feature = "loom"))]
     let inner = Arc::new(Inner {
         counter: Default::default(),
+        wake: Default::default(),
         waiting: Default::default(),
-        thread: Mutex::new(current()),
     });
+
+    #[cfg(feature = "loom")]
+    let inner = Arc::new(Inner {
+        counter: Mutex::new(0),
+        condvar: Condvar::new(),
+    });
+
     let waker = Waker {
         inner: inner.clone(),
     };

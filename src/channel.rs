@@ -1,7 +1,15 @@
 use crate::pair::*;
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
+
+#[cfg(feature = "loom")]
+use loom::sync::Arc;
+#[cfg(not(feature = "loom"))]
 use std::sync::Arc;
+
+#[cfg(feature = "loom")]
+use loom::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct Slot<T> {
@@ -10,19 +18,19 @@ struct Slot<T> {
 }
 
 impl<T> Slot<T> {
-    /// Mark the slot as full
+    /// Mark the slot as full.
     #[inline(always)]
     pub fn mark_full(&self) {
         self.full.store(true, Ordering::Release);
     }
 
-    /// Mark the slot as empty
+    /// Mark the slot as empty.
     #[inline(always)]
     pub fn mark_empty(&self) {
         self.full.store(false, Ordering::Release);
     }
 
-    /// Check if the slot is full
+    /// Check if the slot is full.
     #[inline(always)]
     pub fn is_full(&self) -> bool {
         self.full.load(Ordering::Acquire)
@@ -61,17 +69,12 @@ struct Inner<T> {
 pub struct Sender<T>(Inner<T>);
 
 impl<T> Sender<T> {
-    #[inline(always)]
-    pub fn update_thread(&self) {
-        self.0.rx.update_thread();
-    }
-
     #[inline]
     pub fn send(&self, value: T) {
         // wait until the slot is empty
         self.0.rx.wait();
 
-        // write the value safely
+        // write the value
         unsafe {
             (*self.0.slot.inner.get()).write(value);
         }
@@ -92,9 +95,8 @@ impl<T> Sender<T> {
         unsafe {
             (*self.0.slot.inner.get()).write(value);
         }
-        // mark full then notify
         self.0.slot.mark_full();
-        self.0.tx.wake();
+        self.0.tx.signal();
         Ok(())
     }
 }
@@ -102,11 +104,6 @@ impl<T> Sender<T> {
 pub struct Receiver<T>(Inner<T>);
 
 impl<T> Receiver<T> {
-    #[inline(always)]
-    pub fn update_thread(&self) {
-        self.0.rx.update_thread();
-    }
-
     #[inline(always)]
     pub fn recv(&self) -> T {
         self.0.rx.wait();
@@ -123,10 +120,9 @@ impl<T> Receiver<T> {
 
     #[inline(always)]
     fn get(&self) -> T {
-        // SAFETY: slot must be full
+        // SAFETY: slot must be full at this point.
         let value = unsafe { (*self.0.slot.inner.get()).assume_init_read() };
 
-        // mark empty then notify
         self.0.slot.mark_empty();
         self.0.tx.signal();
 
@@ -152,6 +148,6 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     };
 
     let (tx, rx) = (Sender(inner_tx), Receiver(inner_rx));
-    rx.0.tx.signal(); // initialize sender
+    rx.0.tx.signal(); // initialize sender: slot starts empty
     (tx, rx)
 }
