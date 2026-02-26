@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, not(feature = "loom")))]
 mod tests {
     use std::sync::{
         Arc,
@@ -8,9 +8,6 @@ mod tests {
     use std::time::Duration;
     use waitx::*;
 
-    // ---------------------------------------------------
-    // 1️⃣ Basic functionality
-    // ---------------------------------------------------
     #[test]
     fn test_single_send_recv() {
         let (tx, rx) = channel::<u8>();
@@ -27,30 +24,19 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------
-    // 2️⃣ Blocking behavior
-    // ---------------------------------------------------
     #[test]
     fn test_receiver_blocks_until_send() {
         let (tx, rx) = channel::<u8>();
-        let handle = thread::spawn(move || {
-            rx.update_thread();
-            rx.recv()
-        });
+        let handle = thread::spawn(move || rx.recv());
         thread::sleep(Duration::from_millis(50));
         tx.send(99);
         assert_eq!(handle.join().unwrap(), 99);
     }
 
-    // ---------------------------------------------------
-    // 3️⃣ Concurrency & stress tests
-    // ---------------------------------------------------
     #[test]
     fn test_spsc_rapid_fire() {
         let (tx, rx) = channel::<usize>();
         let handle = thread::spawn(move || {
-            tx.update_thread();
-
             for i in 0..1000 {
                 tx.send(i);
             }
@@ -65,8 +51,6 @@ mod tests {
     fn test_random_delays() {
         let (tx, rx) = channel::<usize>();
         let handle = thread::spawn(move || {
-            tx.update_thread();
-
             for i in 0..100 {
                 thread::sleep(Duration::from_micros(10));
                 tx.send(i);
@@ -78,9 +62,6 @@ mod tests {
         handle.join().unwrap();
     }
 
-    // ---------------------------------------------------
-    // 4️⃣ Memory safety / drop tests
-    // ---------------------------------------------------
     #[test]
     fn test_drop_counter_without_recv() {
         struct DropCounter(Arc<AtomicUsize>);
@@ -118,8 +99,6 @@ mod tests {
     fn test_stress_large_numbers() {
         let (tx, rx) = channel::<usize>();
         let handle = thread::spawn(move || {
-            tx.update_thread();
-
             for i in 0..100_000 {
                 tx.send(i);
             }
@@ -130,9 +109,6 @@ mod tests {
         handle.join().unwrap();
     }
 
-    // ---------------------------------------------------
-    // 5️⃣ Edge cases
-    // ---------------------------------------------------
     #[test]
     fn test_zero_size_type() {
         let (tx, rx) = channel::<()>();
@@ -169,7 +145,6 @@ mod tests {
         let num_iterations = 10_000;
 
         let sender = thread::spawn(move || {
-            tx.update_thread();
             let mut rng = rand::rng();
             for i in 0..num_iterations {
                 tx.send(i);
@@ -183,8 +158,6 @@ mod tests {
         let receiver = {
             let rx = rx.clone();
             thread::spawn(move || {
-                rx.update_thread();
-
                 let mut last = 0;
                 for _ in 0..num_iterations {
                     let val = rx.recv();
