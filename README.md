@@ -1,11 +1,12 @@
 # `waitx`
-Lightweight and low-latency signaling & channel primitives.
+Lightweight signaling & channel primitives for low workloads.
 
 # Overview
-Minimal, low-latency signaling and single-value channels for Rust. Includes Waker/Waiter and Sender/Receiver, beating other crates in microbenchmarks while staying lightweight and safe.
+- A notification primitive (Waker/Waiter).
+- A single-slot channel (Sender/Receiver).
 
 ## Benchmarks
-Performed locally on a 12th Gen Intel(R) Core(TM) i7-12700K.
+Performed locally on a i7-12700K (Windows 11).
 
 ![Violin Plot](docs/criterion/oneshot_ping_pong/report/violin.svg)
 
