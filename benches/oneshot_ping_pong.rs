@@ -5,10 +5,11 @@ use std::time::{Duration, Instant};
 use waitx::*;
 
 #[allow(unused)]
+#[derive(Clone, Copy)]
 struct Payload {
     a: i32,
     b: f64,
-    c: String,
+    c: [u8; 32],
 }
 
 impl Default for Payload {
@@ -16,7 +17,7 @@ impl Default for Payload {
         Self {
             a: 0xBEEF,
             b: f64::from_bits(0x4009_21FB_5444_2D18),
-            c: "bowser".to_string(),
+            c: [0xAB; 32],
         }
     }
 }
@@ -39,11 +40,10 @@ fn bench_oneshot_ping_pong(c: &mut Criterion) {
             let (tx1, rx1) = channel::<Payload>();
             let (tx2, rx2) = channel::<Payload>();
 
-            let (ready_tx, ready_rx) = std_mpsc::channel();
+            let (ready_tx, ready_rx) = std_mpsc::channel::<()>();
 
             let worker = thread::spawn(move || {
-                rx1.update_thread();
-                ready_tx.send(Payload::default()).unwrap();
+                ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
                     rx1.recv();
@@ -65,17 +65,51 @@ fn bench_oneshot_ping_pong(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("02_crossbeam", |b| {
+    group.bench_function("02_oneshot", |b| {
+        b.iter_custom(|iters| {
+            let iters = iters as usize;
+
+            let (fwd_txs, fwd_rxs): (Vec<_>, Vec<_>) =
+                (0..iters).map(|_| oneshot::channel::<Payload>()).unzip();
+            let (bwd_txs, bwd_rxs): (Vec<_>, Vec<_>) =
+                (0..iters).map(|_| oneshot::channel::<Payload>()).unzip();
+
+            let (ready_tx, ready_rx) = std_mpsc::channel::<()>();
+
+            let worker = thread::spawn(move || {
+                ready_tx.send(()).unwrap();
+
+                for (rx, tx) in fwd_rxs.into_iter().zip(bwd_txs) {
+                    rx.recv().unwrap();
+                    tx.send(Payload::default()).unwrap();
+                }
+            });
+
+            ready_rx.recv().unwrap();
+            let start = Instant::now();
+
+            for (tx, rx) in fwd_txs.into_iter().zip(bwd_rxs) {
+                tx.send(Payload::default()).unwrap();
+                rx.recv().unwrap();
+            }
+
+            let elapsed = start.elapsed();
+            worker.join().unwrap();
+            elapsed
+        })
+    });
+
+    group.bench_function("03_crossbeam", |b| {
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
             let (tx1, rx1) = crossbeam_channel::bounded::<Payload>(0);
             let (tx2, rx2) = crossbeam_channel::bounded::<Payload>(0);
 
-            let (ready_tx, ready_rx) = std_mpsc::channel();
+            let (ready_tx, ready_rx) = std_mpsc::channel::<()>();
 
             let worker = thread::spawn(move || {
-                ready_tx.send(Payload::default()).unwrap();
+                ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
                     rx1.recv().unwrap();
@@ -97,49 +131,17 @@ fn bench_oneshot_ping_pong(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("03_flume", |b| {
+    group.bench_function("04_flume", |b| {
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
             let (tx1, rx1) = flume::bounded::<Payload>(0);
             let (tx2, rx2) = flume::bounded::<Payload>(0);
 
-            let (ready_tx, ready_rx) = std_mpsc::channel();
+            let (ready_tx, ready_rx) = std_mpsc::channel::<()>();
 
             let worker = thread::spawn(move || {
-                ready_tx.send(Payload::default()).unwrap();
-
-                for _ in 0..iters {
-                    rx1.recv().unwrap();
-                    tx2.send(Payload::default()).unwrap();
-                }
-            });
-
-            ready_rx.recv().unwrap();
-            let start = Instant::now();
-
-            for _ in 0..iters {
-                tx1.send(Payload::default()).unwrap();
-                rx2.recv().unwrap();
-            }
-
-            let elapsed = start.elapsed();
-            worker.join().unwrap();
-            elapsed
-        })
-    });
-
-    group.bench_function("04_std_mpsc", |b| {
-        b.iter_custom(|iters| {
-            let iters = iters as usize;
-
-            let (tx1, rx1) = std_mpsc::sync_channel::<Payload>(0);
-            let (tx2, rx2) = std_mpsc::sync_channel::<Payload>(0);
-
-            let (ready_tx, ready_rx) = std_mpsc::channel();
-
-            let worker = thread::spawn(move || {
-                ready_tx.send(Payload::default()).unwrap();
+                ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
                     rx1.recv().unwrap();

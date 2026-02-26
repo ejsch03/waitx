@@ -1,7 +1,7 @@
 use atomic_wait::{wait, wake_one};
 use criterion::{Criterion, criterion_group, criterion_main};
 use event_listener::{Event, Listener};
-use spin::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,6 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
             let (ready_tx, ready_rx) = std_mpsc::channel();
 
             let worker = std::thread::spawn(move || {
-                rx_1.update_thread();
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
@@ -49,13 +48,11 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
     });
 
     group.bench_function("02_spin", |b| {
-        use std::sync::Arc;
-
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
-            let flag_a_to_b = Arc::new(Mutex::new(false));
-            let flag_b_to_a = Arc::new(Mutex::new(false));
+            let flag_a_to_b = Arc::new(AtomicU32::new(0));
+            let flag_b_to_a = Arc::new(AtomicU32::new(0));
 
             let f1 = flag_a_to_b.clone();
             let f2 = flag_b_to_a.clone();
@@ -66,17 +63,11 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
-                    // Wait for A → B
-                    loop {
-                        if *f1.lock() {
-                            break;
-                        }
+                    while f1.load(Ordering::Acquire) == 0 {
                         std::hint::spin_loop();
                     }
-                    *f1.lock() = false;
-
-                    // Send B → A
-                    *f2.lock() = true;
+                    f1.store(0, Ordering::Release);
+                    f2.store(1, Ordering::Release);
                 }
             });
 
@@ -85,17 +76,12 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
             let start = Instant::now();
 
             for _ in 0..iters {
-                // Send A → B
-                *flag_a_to_b.lock() = true;
+                flag_a_to_b.store(1, Ordering::Release);
 
-                // Wait for B → A
-                loop {
-                    if *flag_b_to_a.lock() {
-                        break;
-                    }
+                while flag_b_to_a.load(Ordering::Acquire) == 0 {
                     std::hint::spin_loop();
                 }
-                *flag_b_to_a.lock() = false;
+                flag_b_to_a.store(0, Ordering::Release);
             }
 
             let elapsed = start.elapsed();
@@ -105,7 +91,6 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
     });
 
     group.bench_function("03_atomic-wait", |b| {
-        use std::sync::atomic::{AtomicU32, Ordering};
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
@@ -119,13 +104,11 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
-                    // Wait for A → B
                     while a_to_b_clone.load(Ordering::Acquire) == 0 {
                         wait(&a_to_b_clone, 0);
                     }
                     a_to_b_clone.store(0, Ordering::Release);
 
-                    // Send B → A
                     b_to_a_clone.store(1, Ordering::Release);
                     wake_one(&*b_to_a_clone);
                 }
@@ -136,11 +119,9 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
             let start = Instant::now();
 
             for _ in 0..iters {
-                // Send A → B
                 a_to_b.store(1, Ordering::Release);
                 wake_one(&*a_to_b);
 
-                // Wait for B → A
                 while b_to_a.load(Ordering::Acquire) == 0 {
                     wait(&b_to_a, 0);
                 }
@@ -154,8 +135,7 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
     });
 
     group.bench_function("04_event-listener", |b| {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::AtomicBool;
 
         b.iter_custom(|iters| {
             let iters = iters as usize;
@@ -177,7 +157,6 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
-                    // Wait for A → B
                     while !fa.load(Ordering::Acquire) {
                         let listener = ea.listen();
                         if !fa.load(Ordering::Acquire) {
@@ -186,7 +165,6 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
                     }
                     fa.store(false, Ordering::Release);
 
-                    // Send B → A
                     fb.store(true, Ordering::Release);
                     eb.notify(1);
                 }
@@ -197,11 +175,9 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
             let start = Instant::now();
 
             for _ in 0..iters {
-                // Send A → B
                 flag_a_to_b.store(true, Ordering::Release);
                 event_a_to_b.notify(1);
 
-                // Wait for B → A
                 while !flag_b_to_a.load(Ordering::Acquire) {
                     let listener = event_b_to_a.listen();
                     if !flag_b_to_a.load(Ordering::Acquire) {
@@ -217,7 +193,42 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("05_crossbeam", |b| {
+    group.bench_function("05_oneshot", |b| {
+        b.iter_custom(|iters| {
+            let iters = iters as usize;
+
+            let (fwd_txs, fwd_rxs): (Vec<_>, Vec<_>) =
+                (0..iters).map(|_| oneshot::channel::<()>()).unzip();
+            let (bwd_txs, bwd_rxs): (Vec<_>, Vec<_>) =
+                (0..iters).map(|_| oneshot::channel::<()>()).unzip();
+
+            let (ready_tx, ready_rx) = std_mpsc::channel();
+
+            let worker = std::thread::spawn(move || {
+                ready_tx.send(()).unwrap();
+
+                for (rx, tx) in fwd_rxs.into_iter().zip(bwd_txs) {
+                    rx.recv().unwrap();
+                    tx.send(()).unwrap();
+                }
+            });
+
+            ready_rx.recv().unwrap();
+
+            let start = Instant::now();
+
+            for (tx, rx) in fwd_txs.into_iter().zip(bwd_rxs) {
+                tx.send(()).unwrap();
+                rx.recv().unwrap();
+            }
+
+            let elapsed = start.elapsed();
+            worker.join().unwrap();
+            elapsed
+        })
+    });
+
+    group.bench_function("06_crossbeam", |b| {
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
@@ -230,9 +241,7 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
-                    // Wait for A → B
                     rx_1.recv().unwrap();
-                    // Send B → A
                     tx_2.send(()).unwrap();
                 }
             });
@@ -242,9 +251,7 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
             let start = Instant::now();
 
             for _ in 0..iters {
-                // Send A → B
                 tx_1.send(()).unwrap();
-                // Wait for B → A
                 rx_2.recv().unwrap();
             }
 
@@ -254,7 +261,7 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("06_flume", |b| {
+    group.bench_function("07_flume", |b| {
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
@@ -267,9 +274,7 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
                 ready_tx.send(()).unwrap();
 
                 for _ in 0..iters {
-                    // Wait for A → B
                     rx_1.recv().unwrap();
-                    // Send B → A
                     tx_2.send(()).unwrap();
                 }
             });
@@ -279,46 +284,7 @@ fn bench_unit_ping_pong(c: &mut Criterion) {
             let start = Instant::now();
 
             for _ in 0..iters {
-                // Send A → B
                 tx_1.send(()).unwrap();
-                // Wait for B → A
-                rx_2.recv().unwrap();
-            }
-
-            let elapsed = start.elapsed();
-            worker.join().unwrap();
-            elapsed
-        })
-    });
-
-    group.bench_function("07_mpsc", |b| {
-        b.iter_custom(|iters| {
-            let iters = iters as usize;
-
-            let (tx_1, rx_1) = std_mpsc::sync_channel::<()>(0);
-            let (tx_2, rx_2) = std_mpsc::sync_channel::<()>(0);
-
-            let (ready_tx, ready_rx) = std_mpsc::channel();
-
-            let worker = std::thread::spawn(move || {
-                ready_tx.send(()).unwrap();
-
-                for _ in 0..iters {
-                    // Wait for A → B
-                    rx_1.recv().unwrap();
-                    // Send B → A
-                    tx_2.send(()).unwrap();
-                }
-            });
-
-            ready_rx.recv().unwrap();
-
-            let start = Instant::now();
-
-            for _ in 0..iters {
-                // Send A → B
-                tx_1.send(()).unwrap();
-                // Wait for B → A
                 rx_2.recv().unwrap();
             }
 
