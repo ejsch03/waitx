@@ -1,5 +1,6 @@
 #[cfg(all(test, not(feature = "loom")))]
 mod tests {
+    use rand::RngExt;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -135,7 +136,6 @@ mod tests {
 
     #[test]
     fn test_spsc_randomized_stress() {
-        use rand::Rng;
         use std::thread;
         use std::time::Duration;
 

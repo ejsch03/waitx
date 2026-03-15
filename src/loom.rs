@@ -1,13 +1,6 @@
 #[cfg(test)]
 mod loom_tests {
-    use crate::channel::channel;
-    use crate::pair::pair;
-    use crate::util::Tuning;
-    use loom::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use loom::thread;
+    use crate::prelude::*;
 
     /// required for loom since it cannot model busy spin loops.
     const PARK_ONLY: Tuning = Tuning::new(0, 0);
@@ -18,7 +11,7 @@ mod loom_tests {
         loom::model(|| {
             let (waker, waiter) = pair();
             waker.signal();
-            waiter.wait_with_tuning(PARK_ONLY);
+            waiter.wait_with(PARK_ONLY);
         });
     }
 
@@ -34,7 +27,7 @@ mod loom_tests {
                 w.signal();
             });
 
-            waiter.wait_with_tuning(PARK_ONLY);
+            waiter.wait_with(PARK_ONLY);
             t.join().unwrap();
         });
     }
@@ -52,8 +45,8 @@ mod loom_tests {
                 w.signal();
             });
 
-            waiter.wait_with_tuning(PARK_ONLY);
-            waiter.wait_with_tuning(PARK_ONLY);
+            waiter.wait_with(PARK_ONLY);
+            waiter.wait_with(PARK_ONLY);
             t.join().unwrap();
         });
     }
@@ -91,7 +84,7 @@ mod loom_tests {
 
             if !waiter.try_wait() {
                 // signal arrived after our check; fall back to blocking wait.
-                waiter.wait_with_tuning(PARK_ONLY);
+                waiter.wait_with(PARK_ONLY);
             }
 
             t.join().unwrap();
@@ -107,10 +100,10 @@ mod loom_tests {
             let w = waker.clone();
 
             let t = thread::spawn(move || {
-                w.wake();
+                w.poke();
             });
 
-            waiter.wait_with_tuning(PARK_ONLY);
+            waiter.wait_with(PARK_ONLY);
             t.join().unwrap();
         });
     }

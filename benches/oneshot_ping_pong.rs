@@ -2,7 +2,6 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use waitx::*;
 
 #[allow(unused)]
 #[derive(Clone, Copy)]
@@ -37,8 +36,8 @@ fn bench_oneshot_ping_pong(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let iters = iters as usize;
 
-            let (tx1, rx1) = channel::<Payload>();
-            let (tx2, rx2) = channel::<Payload>();
+            let (tx1, rx1) = waitx::channel::<Payload>();
+            let (tx2, rx2) = waitx::channel::<Payload>();
 
             let (ready_tx, ready_rx) = std_mpsc::channel::<()>();
 

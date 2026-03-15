@@ -20,4 +20,4 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
       - name: Run loom tests
-        run: cargo test --features loom --verbose
+        run: cargo test --features loom --lib --verbose

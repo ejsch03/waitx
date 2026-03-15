@@ -1,3 +1,6 @@
+#[cfg(not(feature = "loom"))]
+use crate::prelude::*;
+
 /// Tuning parameters used to configure the spinning behaviour of [`Waiter`].
 #[derive(Clone, Copy, Debug)]
 pub struct Tuning {
@@ -39,12 +42,6 @@ impl Default for Tuning {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-use std::{
-    sync::atomic::{AtomicU32, Ordering},
-    thread,
-};
-
 /// Spins, yields, then blocks via `atomic_wait` until `f` returns `true`.
 #[cfg(not(feature = "loom"))]
 #[inline]
@@ -76,7 +73,7 @@ pub fn wait_until_with_tuning(mut f: impl FnMut() -> bool, wake: &AtomicU32, tun
         if f() {
             return;
         }
-        atomic_wait::wait(wake, val);
+        crate::atomic_wait::wait(wake, val);
         if f() {
             return;
         }

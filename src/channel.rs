@@ -1,16 +1,22 @@
-use crate::pair::*;
-use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
+//! A minimal synchronous single-slot channel.
+//!
+//! This module provides a blocking [`Sender`]/[`Receiver`] pair that transfers
+//! values through a single shared slot. Sending blocks until the slot is
+//! empty; receiving blocks until it is full.
+//!
+//! # Example
+//!
+//! ```
+//! let (tx, rx) = waitx::channel();
+//!
+//! std::thread::spawn(move || {
+//!     tx.send(42);
+//! });
+//!
+//! assert_eq!(rx.recv(), 42);
+//! ```
 
-#[cfg(feature = "loom")]
-use loom::sync::Arc;
-#[cfg(not(feature = "loom"))]
-use std::sync::Arc;
-
-#[cfg(feature = "loom")]
-use loom::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(feature = "loom"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::prelude::*;
 
 struct Slot<T> {
     inner: UnsafeCell<MaybeUninit<T>>,
@@ -18,19 +24,16 @@ struct Slot<T> {
 }
 
 impl<T> Slot<T> {
-    /// Mark the slot as full.
     #[inline(always)]
     pub fn mark_full(&self) {
         self.full.store(true, Ordering::Release);
     }
 
-    /// Mark the slot as empty.
     #[inline(always)]
     pub fn mark_empty(&self) {
         self.full.store(false, Ordering::Release);
     }
 
-    /// Check if the slot is full.
     #[inline(always)]
     pub fn is_full(&self) -> bool {
         self.full.load(Ordering::Acquire)
@@ -66,9 +69,11 @@ struct Inner<T> {
     rx: Waiter,
 }
 
+/// Sending half of a single-slot synchronous channel.
 pub struct Sender<T>(Inner<T>);
 
 impl<T> Sender<T> {
+    /// Sends a value, blocking indefinitely until the slot becomes empty.
     #[inline]
     pub fn send(&self, value: T) {
         // wait until the slot is empty
@@ -86,6 +91,7 @@ impl<T> Sender<T> {
         self.0.tx.signal();
     }
 
+    /// Attempts to send a value without blocking, returning it if the slot is full.
     #[inline(always)]
     pub fn try_send(&self, value: T) -> Result<(), T> {
         // exit early if already full
@@ -101,15 +107,18 @@ impl<T> Sender<T> {
     }
 }
 
+/// Receiving half of a single-slot synchronous channel.
 pub struct Receiver<T>(Inner<T>);
 
 impl<T> Receiver<T> {
+    /// Receives a value, blocking until one is available.
     #[inline(always)]
     pub fn recv(&self) -> T {
         self.0.rx.wait();
         self.get()
     }
 
+    /// Attempts to receive a value without blocking.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
         if !self.0.rx.try_wait() {
@@ -118,6 +127,7 @@ impl<T> Receiver<T> {
         Some(self.get())
     }
 
+    /// Reads and removes the current value from the slot.
     #[inline(always)]
     fn get(&self) -> T {
         // SAFETY: slot must be full at this point.
@@ -130,6 +140,7 @@ impl<T> Receiver<T> {
     }
 }
 
+/// Creates a new single-slot synchronous channel.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let (tx_1, rx_1) = pair();
     let (tx_2, rx_2) = pair();

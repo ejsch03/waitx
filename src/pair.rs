@@ -1,15 +1,22 @@
-use crate::util::*;
+//! A counted, blocking notification primitive.
+//!
+//! This module provides a [`Waker`]/[`Waiter`] pair where each call to
+//! [`Waker::signal`] increments an internal counter and wakes a blocked
+//! [`Waiter`]. Notifications are not lost.
+//!
+//! # Example
+//!
+//! ```
+//! let (waker, waiter) = waitx::pair();
+//!
+//! std::thread::spawn(move || {
+//!     waker.signal();
+//! });
+//!
+//! waiter.wait(); // blocks until signaled
+//! ```
 
-#[cfg(not(feature = "loom"))]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-};
-
-#[cfg(feature = "loom")]
-use loom::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "loom")]
-use loom::sync::{Arc, Condvar, Mutex};
+use crate::prelude::*;
 
 #[cfg(feature = "loom")]
 struct Inner {
@@ -44,21 +51,21 @@ impl Drop for WaitingGuard<'_> {
     }
 }
 
-/// Sends notifications.
+/// Sends counted notifications to a paired [`Waiter`].
 #[derive(Clone)]
 pub struct Waker {
     inner: Arc<Inner>,
 }
 
 impl Waker {
-    /// Wakes the associated [`Waiter`] by incrementing the event counter and waking the waiting thread.
+    /// Increments the event counter and wakes the waiting thread.
     #[inline(always)]
     pub fn signal(&self) {
         #[cfg(not(feature = "loom"))]
         {
             self.inner.counter.fetch_add(1, Ordering::Release);
             self.inner.wake.fetch_add(1, Ordering::Release);
-            atomic_wait::wake_one(&self.inner.wake);
+            crate::atomic_wait::wake_one(&self.inner.wake);
         }
 
         #[cfg(feature = "loom")]
@@ -68,9 +75,9 @@ impl Waker {
         }
     }
 
-    /// Wakes the associated [`Waiter`] only if it is currently waiting.
+    /// Wakes the waiter only if it is currently blocked.
     #[inline(always)]
-    pub fn wake(&self) {
+    pub fn poke(&self) {
         #[cfg(not(feature = "loom"))]
         {
             if self.inner.waiting.load(Ordering::Acquire) {
@@ -83,16 +90,16 @@ impl Waker {
     }
 }
 
-/// Receives notifications.
+/// A counted, blocking notification primitive.
 pub struct Waiter {
     inner: Arc<Inner>,
     next: AtomicU64,
 }
 
 impl Waiter {
-    /// Wait for a [`Waker`] signal, using the provided tuning parameters.
+    /// Blocks until the next notification, using provided tuning.
     #[inline]
-    pub fn wait_with_tuning(&self, tuning: Tuning) {
+    pub fn wait_with(&self, tuning: Tuning) {
         let target = self.next.fetch_add(1, Ordering::Relaxed) + 1;
 
         #[cfg(not(feature = "loom"))]
@@ -118,13 +125,13 @@ impl Waiter {
         }
     }
 
-    /// Wait for a [`Waker`] signal, using the default tuning parameters.
+    /// Blocks until the next notification using default tuning.
     #[inline(always)]
     pub fn wait(&self) {
-        self.wait_with_tuning(Tuning::DEFAULT);
+        self.wait_with(Tuning::DEFAULT);
     }
 
-    /// Check if a signal is available without blocking.
+    /// Attempts to consume a notification without blocking.
     #[inline]
     pub fn try_wait(&self) -> bool {
         let target = self.next.load(Ordering::Relaxed) + 1;
@@ -144,7 +151,7 @@ impl Waiter {
     }
 }
 
-/// Creates a linked [`Waker`] / [`Waiter`] pair.
+/// Creates a new counted notification pair.
 pub fn pair() -> (Waker, Waiter) {
     #[cfg(not(feature = "loom"))]
     let inner = Arc::new(Inner {
